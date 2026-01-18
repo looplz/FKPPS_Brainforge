@@ -7,6 +7,8 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Mail;
+use App\Mail\NewSubmission;
 
 class SubmissionController extends Controller
 {
@@ -16,20 +18,30 @@ class SubmissionController extends Controller
     public function store(Request $request) {
         $request->validate([
             'title' => 'required',
-            'document' => 'required|mimes:pdf|max:10000',
+            'document' => 'required|mimes:pdf,doc,docx|max:10000',
             'supervisor_id' => 'required|exists:users,id',
             'type' => 'required'
         ]);
 
         $path = $request->file('document')->store('submissions');
 
-        Submission::create([
+        // FIX IS HERE: Add "$submission =" before Submission::create
+        $submission = Submission::create([
             'student_id' => Auth::id(),
             'title' => $request->title,
             'document_path' => $path,
             'presentation_type' => $request->type,
             'supervisor_id' => $request->supervisor_id
         ]);
+
+        // FETCH SUPERVISOR
+        $supervisor = User::find($request->supervisor_id);
+
+        // SEND EMAIL
+        if ($supervisor) {
+            // Now $submission exists, so this works!
+            Mail::to($supervisor->email)->send(new NewSubmission($submission));
+        }
 
         return redirect()->route('dashboard')->with('success', 'Presentation requested.');
     }

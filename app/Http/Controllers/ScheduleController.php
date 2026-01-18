@@ -4,7 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Schedule;
 use App\Models\Submission;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail; // Import Mail Facade
+use App\Mail\PresentationScheduled;  // Import the Mailable
 
 class ScheduleController extends Controller
 {
@@ -14,6 +17,7 @@ class ScheduleController extends Controller
     }
 
     public function store(Request $request) {
+        // 1. Validate Input
         $request->validate([
             'submission_id' => 'required',
             'date' => 'required|date',
@@ -24,9 +28,10 @@ class ScheduleController extends Controller
 
         $submission = Submission::with(['supervisor', 'student'])->findOrFail($request->submission_id);
 
-        // --- CONFLICT CHECKING LOGIC ---
+        // --- CONFLICT CHECKING LOGIC (Module 3 Requirement) ---
 
-        // 1. Venue Conflict
+        // 2. Check Venue Conflict
+        // Ensure the room isn't double-booked at this time[cite: 92].
         $venueConflict = Schedule::where('presentation_date', $request->date)
             ->where('venue', $request->venue)
             ->where(function($query) use ($request) {
@@ -38,7 +43,8 @@ class ScheduleController extends Controller
             return back()->withErrors(['venue' => 'Venue is booked at this time.']);
         }
 
-        // 2. Person Conflict (Supervisor/Examiners)
+        // 3. Check Person Conflict (Supervisor/Examiners)
+        // Ensure faculty members aren't in two places at once[cite: 92].
         $peopleInvolved = [
             $submission->supervisor_id,
             $submission->examiner_1_id,
@@ -57,12 +63,12 @@ class ScheduleController extends Controller
             })->exists();
 
         if ($personConflict) {
-            return back()->withErrors(['time' => 'Supervisor or Examiner has a clash.']);
+            return back()->withErrors(['time' => 'Supervisor or Examiner has a clash with another session.']);
         }
 
-        // --- END CONFLICT CHECK ---
+        // --- CREATE SCHEDULE ---
 
-        Schedule::create([
+        $schedule = Schedule::create([
             'submission_id' => $request->submission_id,
             'presentation_date' => $request->date,
             'start_time' => $request->start_time,
@@ -71,7 +77,42 @@ class ScheduleController extends Controller
             'created_by' => auth()->id()
         ]);
 
-        // FIX IS HERE: Changed 'manager.dashboard' to 'dashboard'
-        return redirect()->route('dashboard')->with('success', 'Schedule Confirmed.');
+        // Update Submission Status to 'finalized'
+        $submission->manager_status = 'finalized';
+        $submission->save();
+
+        // --- EMAIL NOTIFICATIONS (Module 3 Requirement) ---
+        // Notify Student, Supervisor, and Examiners.
+
+        $recipients = [];
+
+        // Add Student
+        if ($submission->student) {
+            $recipients[] = $submission->student->email;
+        }
+
+        // Add Supervisor
+        if ($submission->supervisor) {
+            $recipients[] = $submission->supervisor->email;
+        }
+
+        // Add Examiner 1
+        if ($submission->examiner_1_id) {
+            $ex1 = User::find($submission->examiner_1_id);
+            if ($ex1) $recipients[] = $ex1->email;
+        }
+
+        // Add Examiner 2
+        if ($submission->examiner_2_id) {
+            $ex2 = User::find($submission->examiner_2_id);
+            if ($ex2) $recipients[] = $ex2->email;
+        }
+
+        // Send the emails
+        foreach ($recipients as $email) {
+            Mail::to($email)->send(new PresentationScheduled($schedule));
+        }
+
+        return redirect()->route('dashboard')->with('success', 'Schedule Confirmed and Emails Sent.');
     }
 }
